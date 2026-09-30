@@ -300,6 +300,8 @@ def _apply_state(data: dict, remote: bool = False):
     if data.get("password_hash"):
         AUTH["password_hash"] = data["password_hash"]
     CONFIG["disable_logging"] = bool(data.get("disable_logging", False))
+    if "clean_ips" in data:
+        CLEAN_IPS[:] = [ip for ip in (data.get("clean_ips") or []) if isinstance(ip, str)]
     apply_logging_state()
 
 
@@ -380,6 +382,7 @@ async def save_state():
             "nodes": dict(NODES),
             "password_hash": AUTH["password_hash"],
             "disable_logging": CONFIG.get("disable_logging", False),
+            "clean_ips": list(CLEAN_IPS),
             "saved_at": datetime.now().isoformat(),
         }
         wrote_to_pg = False
@@ -459,6 +462,8 @@ hourly_traffic: dict = defaultdict(int)
 http_client: httpx.AsyncClient | None = None
 LINKS: dict = {}
 LINKS_LOCK = asyncio.Lock()
+# لیست IP‌هایی که پنل از طریقشون در دسترسه (برای ساخت کانفیگ با آدرس IP)
+CLEAN_IPS: list = []
 SUBS: dict = {}
 SUBS_LOCK = asyncio.Lock()
 
@@ -821,6 +826,12 @@ def generate_share_link(uuid: str, host: str, remark: str = "RVG", protocol: str
     link = LINKS.get(uuid) or {}
     alpn = link.get("alpn", "h2")
     fp = link.get("fingerprint", "chrome")
+    # آدرس اتصال: اگه برای لینک IP (یا دامنه‌ی دیگه) ست شده باشه، کلاینت مستقیم
+    # به همون وصل می‌شه ولی host/sni همچنان دامنه‌ی پنل می‌مونه. برای وقتی که
+    # DNS اپراتور دامنه رو به IP اشتباه resolve می‌کنه.
+    addr = link.get("connect_address") or host
+    if ":" in addr and not addr.startswith("["):
+        addr = f"[{addr}]"
 
     if protocol == "mtproto":
         secret = link.get("mtproto_secret")
@@ -842,7 +853,7 @@ def generate_share_link(uuid: str, host: str, remark: str = "RVG", protocol: str
     if protocol == "shadowsocks":
         cipher = link.get("ss_cipher", DEFAULT_CIPHER)
         password = link.get("ss_password", "")
-        return generate_ss_link(host, 443, cipher, password, remark)
+        return generate_ss_link(host, 443, cipher, password, remark, address=addr)
 
     if protocol == "trojan-ws":
         params = {
@@ -850,7 +861,7 @@ def generate_share_link(uuid: str, host: str, remark: str = "RVG", protocol: str
             "path": "/trojan-ws", "sni": host, "fp": fp, "alpn": alpn,
         }
         query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
-        return f"trojan://{uuid}@{host}:443?{query}#{quote(remark)}"
+        return f"trojan://{uuid}@{addr}:443?{query}#{quote(remark)}"
 
     if protocol.startswith("trojan-xhttp-"):
         mode = protocol.replace("trojan-xhttp-", "")
@@ -860,7 +871,7 @@ def generate_share_link(uuid: str, host: str, remark: str = "RVG", protocol: str
             "path": path, "sni": host, "fp": fp, "alpn": alpn,
         }
         query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
-        return f"trojan://{uuid}@{host}:443?{query}#{quote(remark)}"
+        return f"trojan://{uuid}@{addr}:443?{query}#{quote(remark)}"
 
     if protocol == "vless-ws":
         path = f"/ws/{uuid}"
@@ -889,7 +900,7 @@ def generate_share_link(uuid: str, host: str, remark: str = "RVG", protocol: str
             "alpn": alpn,
         }
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
-    return f"vless://{uuid}@{host}:443?{query}#{quote(remark)}"
+    return f"vless://{uuid}@{addr}:443?{query}#{quote(remark)}"
 
 def uptime() -> str:
     secs = int(time.time() - stats["start_time"])
@@ -1986,6 +1997,7 @@ async def _create_link_core(body: dict) -> dict:
         "sub_id": sub_id,
         "protocol": protocol,
         "ad_tag": None,
+        "connect_address": _clean_address(body.get("connect_address")),
     }
 
     if protocol == "mtproto":
@@ -2177,7 +2189,9 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
         if "fingerprint" in body:
             fp_val = str(body["fingerprint"]).strip()
             link["fingerprint"] = fp_val if fp_val in ("chrome", "firefox", "ios") else "chrome"
-        if any(k in body for k in ("label", "note", "limit_value", "expires_days", "alpn", "fingerprint")):
+        if "connect_address" in body:
+            link["connect_address"] = _clean_address(body.get("connect_address"))
+        if any(k in body for k in ("label", "note", "limit_value", "expires_days", "alpn", "fingerprint", "connect_address")):
             log_activity("link", f"کانفیگ «{link['label']}» ویرایش شد", "info")
         new_sub = body.get("sub_id", "UNCHANGED")
         if new_sub != "UNCHANGED":
@@ -3124,6 +3138,263 @@ async def set_logging_setting(request: Request, _=Depends(require_auth)):
     apply_logging_state()
     await save_state()
     return {"ok": True, "disabled": disabled}
+
+
+# ── IP تمیز: ساخت کانفیگ با آدرس IP به‌جای دامنه ──────────────────────────────
+# وقتی DNS اپراتور دامنه‌ی پنل (مثلاً *.fly.dev) رو به IP اشتباه/فیلترشده resolve
+# می‌کنه، کلاینت با IP مستقیم وصل می‌شه و host/sni همون دامنه می‌مونه. اسکن زیر
+# IP‌هایی رو پیدا می‌کنه که واقعاً به همین پنل می‌رسن (TLS با SNI دامنه + /health).
+# توجه: این تست از سمت سرور انجامه؛ اینکه IP از داخل ایران باز باشه فقط از
+# سمت کلاینت معلوم می‌شه — برای همین اسم هر کانفیگ IP خودش رو داره.
+import ipaddress
+import ssl
+import re as _re
+
+# روی Fly هر اپ فقط به IP‌های اختصاص‌داده‌ی خودش جواب می‌ده (بقیه‌ی IP‌های رنج
+# shared anycast با SNI این اپ ریست می‌کنن — تست‌شده)، پس برای Fly اسکن رنج
+# بی‌فایده‌ست و فقط IP‌های DNS خود دامنه کار می‌کنن. رنج اسکن برای وقتیه که
+# پنل پشت CDN (مثلاً Cloudflare با دامنه‌ی اختصاصی) باشه.
+CLEAN_IP_SCAN_MAX_CANDIDATES = 2048
+CLEAN_IP_SCAN: dict = {"running": False, "total": 0, "done": 0, "found": [], "host": "",
+                       "started_at": None, "finished_at": None, "error": None}
+_ADDR_RE = _re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
+
+
+def _clean_address(raw) -> str | None:
+    """IP (v4/v6) یا دامنه‌ی معتبر، وگرنه None."""
+    a = str(raw or "").strip().strip("[]")
+    if not a:
+        return None
+    try:
+        return str(ipaddress.ip_address(a))
+    except ValueError:
+        pass
+    return a.lower() if _ADDR_RE.match(a) and "." in a else None
+
+
+def _default_scan_ranges(host: str) -> list[str]:
+    return []
+
+
+def _expand_candidates(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in lines:
+        item = raw.strip()
+        if not item or item.startswith("#"):
+            continue
+        try:
+            if "/" in item:
+                net = ipaddress.ip_network(item, strict=False)
+                ips = (str(h) for h in (net.hosts() if net.num_addresses > 2 else net))
+            else:
+                ips = [str(ipaddress.ip_address(item))]
+        except ValueError:
+            continue
+        for ip in ips:
+            if ip not in seen:
+                seen.add(ip)
+                out.append(ip)
+            if len(out) >= CLEAN_IP_SCAN_MAX_CANDIDATES:
+                return out
+    return out
+
+
+async def _resolve_host_ips(host: str) -> list[str]:
+    """IP‌های دامنه از DNS سیستم و DoH (کلادفلر/گوگل)."""
+    found: list[str] = []
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, 443)
+        found += [i[4][0] for i in infos]
+    except Exception:
+        pass
+    doh = [(url, {"name": host, "type": t})
+           for url in ("https://cloudflare-dns.com/dns-query", "https://dns.google/resolve")
+           for t in ("A", "AAAA")]
+    try:
+        async with httpx.AsyncClient(timeout=6) as c:
+            for url, params in doh:
+                try:
+                    r = await c.get(url, params=params, headers={"accept": "application/dns-json"})
+                    for ans in (r.json().get("Answer") or []):
+                        if ans.get("type") in (1, 28):
+                            found.append(ans.get("data", ""))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    # IP‌های خصوصی (مثل 10.10.34.36 که DNS فیلترشده برمی‌گردونه) حذف می‌شن
+    out = []
+    for ip in dict.fromkeys(found):
+        try:
+            if ipaddress.ip_address(ip).is_global:
+                out.append(str(ipaddress.ip_address(ip)))
+        except ValueError:
+            continue
+    return out
+
+
+async def _probe_ip(ip: str, host: str, ctx: ssl.SSLContext, timeout: float = 5.0) -> float | None:
+    """اتصال TLS به ip با SNI=host و درخواست /health؛ اگه جواب از خود پنل بود، زمان (ms)."""
+    t0 = time.monotonic()
+    writer = None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, 443, ssl=ctx, server_hostname=host), timeout)
+        writer.write(f"GET /health HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0\r\n"
+                     f"Connection: close\r\n\r\n".encode())
+        await writer.drain()
+        data = b""
+        while len(data) < 8192:
+            chunk = await asyncio.wait_for(reader.read(4096), timeout)
+            if not chunk:
+                break
+            data += chunk
+            if b'"status"' in data:
+                break
+        if data.startswith(b"HTTP/1.1 200") and b'"status"' in data:
+            return round((time.monotonic() - t0) * 1000, 1)
+    except Exception:
+        return None
+    finally:
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
+    return None
+
+
+async def _run_clean_ip_scan(host: str, range_lines: list[str], include_dns: bool):
+    st = CLEAN_IP_SCAN
+    try:
+        dns_ips = await _resolve_host_ips(host) if include_dns else []
+        candidates = _expand_candidates(dns_ips + range_lines)
+        st["total"] = len(candidates)
+        ctx = ssl.create_default_context()
+        ctx.set_alpn_protocols(["http/1.1"])
+        sem = asyncio.Semaphore(64)
+        found: list[dict] = []
+
+        async def one(ip: str):
+            async with sem:
+                ms = await _probe_ip(ip, host, ctx)
+            st["done"] += 1
+            if ms is not None:
+                found.append({"ip": ip, "ms": ms, "dns": ip in dns_ips})
+                st["found"] = sorted(found, key=lambda x: x["ms"])
+
+        await asyncio.gather(*(one(ip) for ip in candidates))
+        # IP‌هایی که اسکن شدن و جواب ندادن حذف می‌شن؛ IP‌های دستیِ خارج از اسکن می‌مونن
+        scanned = set(candidates)
+        ok = [f["ip"] for f in st["found"]]
+        kept = [ip for ip in CLEAN_IPS if ip not in scanned and ip not in ok]
+        CLEAN_IPS[:] = ok + kept
+        await save_state()
+        log_activity("system", f"اسکن IP تمام شد: {len(ok)} IP سالم از {len(candidates)}", "ok" if ok else "warn")
+    except Exception as e:
+        st["error"] = str(e)
+        logger.error(f"اسکن IP ناموفق: {e}")
+    finally:
+        st["running"] = False
+        st["finished_at"] = datetime.now().isoformat()
+
+
+@app.get("/api/clean-ips")
+async def get_clean_ips(_=Depends(require_auth)):
+    host = get_host()
+    return {
+        "ips": list(CLEAN_IPS),
+        "host": host,
+        "default_ranges": _default_scan_ranges(host),
+        "scan": dict(CLEAN_IP_SCAN),
+    }
+
+
+@app.post("/api/clean-ips")
+async def set_clean_ips(request: Request, _=Depends(require_auth)):
+    body = await request.json()
+    raw = body.get("ips") or []
+    if isinstance(raw, str):
+        raw = _re.split(r"[\s,]+", raw)
+    ips = [a for a in (_clean_address(x) for x in raw) if a]
+    CLEAN_IPS[:] = list(dict.fromkeys(ips))[:1000]
+    await save_state()
+    return {"ok": True, "ips": list(CLEAN_IPS)}
+
+
+@app.post("/api/clean-ips/scan")
+async def scan_clean_ips(request: Request, _=Depends(require_auth)):
+    if CLEAN_IP_SCAN["running"]:
+        raise HTTPException(status_code=409, detail="اسکن در حال اجراست")
+    body = await request.json()
+    host = get_host()
+    if not host or host in ("localhost", "127.0.0.1"):
+        raise HTTPException(status_code=400, detail="دامنه‌ی عمومی پنل مشخص نیست")
+    ranges = body.get("ranges")
+    if isinstance(ranges, str):
+        ranges = _re.split(r"[\s,]+", ranges)
+    if not ranges:
+        ranges = _default_scan_ranges(host)
+    CLEAN_IP_SCAN.update({"running": True, "total": 0, "done": 0, "found": [], "host": host,
+                          "started_at": datetime.now().isoformat(), "finished_at": None, "error": None})
+    asyncio.create_task(_run_clean_ip_scan(host, list(ranges), bool(body.get("include_dns", True))))
+    return {"ok": True, "started": True}
+
+
+@app.post("/api/links/bulk-ip")
+async def bulk_create_ip_links(request: Request, _=Depends(require_auth)):
+    """ساخت چند کانفیگ هم‌تنظیم، هر کدوم با یک IP متفاوت، داخل یک گروه."""
+    body = await request.json()
+    protocol = body.get("protocol") or DEFAULT_PROTOCOL
+    if protocol not in PROTOCOLS or protocol == "mtproto":
+        raise HTTPException(status_code=400, detail="این پروتکل برای ساخت با IP پشتیبانی نمی‌شود")
+    try:
+        count = max(1, min(int(body.get("count") or 30), 200))
+    except (TypeError, ValueError):
+        count = 30
+    raw_ips = body.get("ips") or list(CLEAN_IPS)
+    ips = list(dict.fromkeys(a for a in (_clean_address(x) for x in raw_ips) if a))[:count]
+    if not ips:
+        raise HTTPException(status_code=400, detail="لیست IP خالی است — اول اسکن کن یا IP وارد کن")
+
+    # ws فقط روی http/1.1 درست کار می‌کنه؛ xhttp با h2 هم اوکیه
+    alpn = (body.get("alpn") or "").strip()
+    if not alpn:
+        alpn = "http/1.1" if (protocol.endswith("-ws") or protocol == "shadowsocks") else "h2,http/1.1"
+
+    sub_id = body.get("sub_id") or None
+    if sub_id and sub_id not in SUBS:
+        sub_id = None
+    group_name = (body.get("group_name") or "").strip()
+    if not sub_id and group_name:
+        sub_id = next((sid for sid, sd in SUBS.items() if sd.get("name") == group_name), None)
+        if not sub_id:
+            sub_id = (await _create_sub_core({"name": group_name}))["sub_id"]
+
+    prefix = (body.get("label_prefix") or "IP").strip()[:30]
+    created, failed = [], 0
+    for i, ip in enumerate(ips):
+        try:
+            res = await _create_link_core({
+                "label": f"{prefix} {i + 1} · {ip}",
+                "limit_value": body.get("limit_value") or 0,
+                "limit_unit": body.get("limit_unit") or "GB",
+                "expires_days": body.get("expires_days") or 0,
+                "note": body.get("note") or "",
+                "sub_id": sub_id,
+                "protocol": protocol,
+                "alpn": alpn,
+                "fingerprint": body.get("fingerprint") or "chrome",
+                "connect_address": ip,
+            })
+            created.append({"uuid": res["uuid"], "ip": ip, "link": res["vless_link"]})
+        except Exception as e:
+            failed += 1
+            logger.warning(f"ساخت کانفیگ IP {ip} ناموفق: {e}")
+    log_activity("link", f"{len(created)} کانفیگ با IP‌های مختلف ساخته شد", "ok")
+    return {"ok": True, "created": len(created), "failed": failed, "sub_id": sub_id,
+            "requested": count, "available_ips": len(ips), "links": created}
 
 
 # ── HTML Pages ───────────────────────────────────────────────────────────────

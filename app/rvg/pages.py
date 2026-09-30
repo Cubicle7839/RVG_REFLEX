@@ -1790,6 +1790,9 @@ a{color:inherit;text-decoration:none}
             <input class="cm-input" id="nl-note" placeholder="توضیح کوتاه">
           </div>
         </div>
+        <div class="cm-field" style="margin-bottom:0"><label>آدرس اتصال — IP (اختیاری)</label>
+          <input class="cm-input" id="nl-addr" dir="ltr" placeholder="خالی = دامنه‌ی پنل · مثلاً 66.241.124.10">
+        </div>
       </div>
 
       <!-- بخش ۱: پایه -->
@@ -1997,11 +2000,85 @@ a{color:inherit;text-decoration:none}
         </div>
       </div>
 
+      <!-- ساخت گروهی با IP‌های مختلف -->
+      <div class="cm-section" id="nl-bulkip-section" style="margin-bottom:0">
+        <div class="cm-section-label"><i class="ti ti-world-pin"></i> ساخت گروهی با IP‌های مختلف</div>
+        <div class="cm-note" style="margin-top:0;margin-bottom:10px">
+          <i class="ti ti-info-circle"></i>
+          <span>با همین تنظیمات بالا، از هر IP لیست یک کانفیگ ساخته می‌شود (host/sni همان دامنه می‌ماند). IP‌های ذخیره‌شده: <b id="nl-bulkip-count">—</b></span>
+        </div>
+        <div class="cm-row2">
+          <input class="cm-input" id="nl-bulkip-n" type="number" min="1" max="200" value="30" placeholder="تعداد">
+          <button type="button" class="btn btn-g" onclick="openCleanIps()"><i class="ti ti-list-search"></i> مدیریت / اسکن IP‌ها</button>
+        </div>
+        <button type="button" class="cm-btn-submit" id="nl-bulkip-btn" style="width:100%;margin-top:10px" onclick="bulkCreateIpFromModal()">
+          <i class="ti ti-stack-2"></i> <span>ساخت کانفیگ‌ها با IP‌های مختلف</span>
+        </button>
+      </div>
+
     </div>
 
     <div class="cm-footer">
       <button class="cm-btn-cancel" onclick="closeModal('modal-create-link')">انصراف</button>
       <button class="cm-btn-submit" id="cm-submit-btn" onclick="createLink()"><i class="ti ti-link-plus" id="cm-submit-icon"></i> <span id="cm-submit-text">ساخت کانفیگ</span></button>    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-clean-ips">
+  <div class="modal-v2 cm-modal">
+    <button class="cm-close" onclick="closeModal('modal-clean-ips')"><i class="ti ti-x"></i></button>
+    <div class="cm-head">
+      <div class="cm-head-row">
+        <div class="cm-head-icon"><i class="ti ti-world-pin"></i></div>
+        <div>
+          <div class="cm-head-title">کانفیگ با IP‌های مختلف</div>
+          <div class="cm-head-sub">پیدا کردن IP‌هایی که به این پنل می‌رسند و ساخت کانفیگ با هر کدام</div>
+        </div>
+      </div>
+    </div>
+    <div class="cm-body">
+      <div class="cm-section">
+        <div class="cm-section-label"><i class="ti ti-radar-2"></i> اسکن خودکار</div>
+        <div class="cm-field">
+          <label>رنج‌های اسکن (CIDR یا IP، هر خط یکی) — دامنه: <span id="cip-host" dir="ltr">—</span></label>
+          <textarea class="cm-input" id="cip-ranges" dir="ltr" rows="2" placeholder="خالی = فقط IP‌های DNS دامنه · پشت Cloudflare: 104.16.0.0/20"></textarea>
+        </div>
+        <button type="button" class="btn btn-g" id="cip-scan-btn" onclick="cipScan()"><i class="ti ti-radar-2"></i> اسکن و پیدا کردن IP‌های سالم</button>
+        <div class="cm-note" id="cip-scan-status" style="margin-top:10px">
+          <i class="ti ti-info-circle"></i>
+          <span>IP‌های واقعی دامنه (از DoH، نه DNS اپراتور) و رنج بالا تست می‌شوند؛ هر IP که با SNI دامنه‌ی پنل جواب بدهد به لیست اضافه می‌شود. روی Fly فقط IP‌های خود اپ جواب می‌دهند؛ لیست بزرگ IP فقط وقتی پنل پشت CDN (Cloudflare) باشد به دست می‌آید. تست از سمت سرور است — باز بودن روی اپراتور شما را خود کانفیگ نشان می‌دهد.</span>
+        </div>
+      </div>
+      <div class="cm-section">
+        <div class="cm-section-label"><i class="ti ti-list"></i> لیست IP‌ها (<span id="cip-count">۰</span>)</div>
+        <textarea class="cm-input" id="cip-ips" dir="ltr" rows="7" placeholder="هر خط یک IP"></textarea>
+        <button type="button" class="btn btn-g" style="margin-top:8px" onclick="cipSave()"><i class="ti ti-device-floppy"></i> ذخیره‌ی لیست</button>
+      </div>
+      <div class="cm-section" style="margin-bottom:0">
+        <div class="cm-section-label"><i class="ti ti-stack-2"></i> ساخت کانفیگ‌ها</div>
+        <div class="cm-row2">
+          <div class="cm-field"><label>پروتکل</label>
+            <select class="cm-input" id="cip-proto">
+              <option value="vless-ws">VLESS · WS</option>
+              <option value="xhttp-stream-up">VLESS · XHTTP stream-up</option>
+              <option value="xhttp-packet-up">VLESS · XHTTP packet-up</option>
+              <option value="trojan-ws">Trojan · WS</option>
+              <option value="trojan-xhttp-stream-up">Trojan · XHTTP stream-up</option>
+            </select>
+          </div>
+          <div class="cm-field"><label>تعداد</label>
+            <input class="cm-input" id="cip-n" type="number" min="1" max="200" value="30">
+          </div>
+        </div>
+        <div class="cm-field" style="margin-bottom:0"><label>نام گروه ساب</label>
+          <input class="cm-input" id="cip-group" value="کانفیگ‌های IP">
+        </div>
+      </div>
+    </div>
+    <div class="cm-footer">
+      <button class="cm-btn-cancel" onclick="closeModal('modal-clean-ips')">بستن</button>
+      <button class="cm-btn-submit" id="cip-create-btn" onclick="cipCreate()"><i class="ti ti-stack-2"></i> <span>ساخت کانفیگ‌ها</span></button>
+    </div>
   </div>
 </div>
 
@@ -2948,6 +3025,9 @@ a{color:inherit;text-decoration:none}
       </button>
       <button class="btn btn-g" onclick="bulkCreateGroup('messenger')" id="bulk-messenger-btn">
         <i class="ti ti-brand-telegram"></i> <span>۱۰ کانفیگ پیام‌رسان‌ها</span>
+      </button>
+      <button class="btn btn-g" onclick="openCleanIps()">
+        <i class="ti ti-world-pin"></i> <span>۳۰ کانفیگ با IP</span>
       </button>
       <button class="btn btn-g" onclick="openModal('modal-bot-tcp-proxy');btpCheckTokenState()">
         <i class="ti ti-server-2"></i> <span>Bot tcp proxy</span>
@@ -3979,14 +4059,15 @@ async function createLink(){
   const alpn = (isMt || isSs) ? null : (document.getElementById('nl-alpn').value || 'h2,http/1.1');
   const fingerprint = (isMt || isSs) ? null : (document.getElementById('nl-fp').value || 'chrome');
   const ss_cipher = isSs ? (document.getElementById('nl-ss-cipher').value || 'chacha20-ietf-poly1305') : null;
+  const connect_address = isMt ? null : (document.getElementById('nl-addr').value.trim() || null);
   try{
     const url = nodeId ? ('/api/nodes/'+nodeId+'/links') : '/api/links';
-    const r=await authF(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label,limit_value:val||0,limit_unit:unit,expires_days:exp||0,note,sub_id,protocol,mtproto_port,mtproto_domain,mtproto_public_host,mtproto_public_port,alpn,fingerprint,ss_cipher})});
+    const r=await authF(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label,limit_value:val||0,limit_unit:unit,expires_days:exp||0,note,sub_id,protocol,mtproto_port,mtproto_domain,mtproto_public_host,mtproto_public_port,alpn,fingerprint,ss_cipher,connect_address})});
     if(!r.ok){
       const d=await r.json().catch(()=>({}));
       throw new Error(d.detail||'failed');
     }
-    ['nl-label','nl-val','nl-exp','nl-note','nl-mtproto-port','nl-mtproto-domain','nl-mtproto-public-host','nl-mtproto-public-port'].forEach(id=>document.getElementById(id).value='');
+    ['nl-label','nl-val','nl-exp','nl-note','nl-addr','nl-mtproto-port','nl-mtproto-domain','nl-mtproto-public-host','nl-mtproto-public-port'].forEach(id=>document.getElementById(id).value='');
     toast(isMt ? 'پروکسی ساخته شد ✓' : (nodeId?'کانفیگ روی نود ساخته شد ✓':'کانفیگ ساخته شد ✓'),'ok');
     loadLinks();
   }catch(e){toast('✗ '+(e.message||'خطا (شاید کلید این نود اجازه‌ی ساخت از راه دور ندارد)'),'err')}
@@ -4056,6 +4137,124 @@ async function bulkCreateGroup(kind){
 }
 
 
+
+// ── کانفیگ با IP‌های مختلف ─────────────────────────────────────────────────────
+let cipPollTimer = null;
+function cipRenderIps(ips){
+  document.getElementById('cip-ips').value = (ips||[]).join('\n');
+  document.getElementById('cip-count').textContent = toFa((ips||[]).length);
+  const c = document.getElementById('nl-bulkip-count');
+  if(c) c.textContent = toFa((ips||[]).length);
+}
+function cipRenderScan(sc){
+  const el = document.getElementById('cip-scan-status');
+  const btn = document.getElementById('cip-scan-btn');
+  if(!sc || (!sc.running && !sc.finished_at)){ btn.disabled = false; return; }
+  btn.disabled = !!sc.running;
+  const found = (sc.found||[]).length;
+  let msg;
+  if(sc.running) msg = `در حال اسکن… ${toFa(sc.done)} از ${toFa(sc.total)} — ${toFa(found)} IP سالم`;
+  else if(sc.error) msg = 'اسکن ناموفق: ' + sc.error;
+  else msg = `اسکن تمام شد: ${toFa(found)} IP سالم از ${toFa(sc.total)} (به لیست اضافه شد)`;
+  el.innerHTML = `<i class="ti ${sc.running?'ti-loader-2':'ti-info-circle'}"></i><span>${esc(msg)}</span>`;
+}
+async function cipLoad(){
+  const r = await authF('/api/clean-ips');
+  if(!r.ok) throw new Error('خواندن لیست IP ناموفق بود');
+  const d = await r.json();
+  document.getElementById('cip-host').textContent = d.host || '—';
+  const rg = document.getElementById('cip-ranges');
+  if(!rg.value.trim()) rg.value = (d.default_ranges||[]).join('\n');
+  cipRenderScan(d.scan);
+  return d;
+}
+async function openCleanIps(){
+  openModal('modal-clean-ips');
+  try{
+    const d = await cipLoad();
+    cipRenderIps(d.ips);
+    if(d.scan && d.scan.running) cipPoll();
+  }catch(e){ toast('✗ '+e.message,'err'); }
+}
+function cipPoll(){
+  clearTimeout(cipPollTimer);
+  cipPollTimer = setTimeout(async ()=>{
+    try{
+      const d = await cipLoad();
+      if(d.scan.running){ cipPoll(); return; }
+      cipRenderIps(d.ips);
+      toast(`اسکن تمام شد — ${toFa((d.scan.found||[]).length)} IP سالم`, (d.scan.found||[]).length?'ok':'');
+    }catch(e){ cipPoll(); }
+  }, 1500);
+}
+async function cipScan(){
+  const ranges = document.getElementById('cip-ranges').value;
+  try{
+    const r = await authF('/api/clean-ips/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ranges, include_dns:true})});
+    if(!r.ok){ const d=await r.json().catch(()=>({})); throw new Error(d.detail||'شروع اسکن ناموفق بود'); }
+    document.getElementById('cip-scan-btn').disabled = true;
+    cipPoll();
+  }catch(e){ toast('✗ '+e.message,'err'); }
+}
+async function cipSave(){
+  const ips = document.getElementById('cip-ips').value;
+  try{
+    const r = await authF('/api/clean-ips',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ips})});
+    if(!r.ok) throw new Error('ذخیره ناموفق بود');
+    const d = await r.json();
+    cipRenderIps(d.ips);
+    toast(`${toFa(d.ips.length)} IP ذخیره شد ✓`,'ok');
+    return d.ips;
+  }catch(e){ toast('✗ '+e.message,'err'); throw e; }
+}
+async function bulkCreateIp(payload, btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await authF('/api/links/bulk-ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail||'ساخت ناموفق بود');
+    let msg = `${toFa(d.created)} کانفیگ با IP‌های مختلف ساخته شد`;
+    if(d.available_ips < d.requested) msg += ` (فقط ${toFa(d.available_ips)} IP در لیست بود)`;
+    if(d.failed) msg += ` · ${toFa(d.failed)} ناموفق`;
+    toast(msg + ' ✓', d.failed?'':'ok');
+    loadLinks();
+    if(typeof loadSubs==='function') loadSubs();
+    if(typeof loadSubsPage==='function') loadSubsPage();
+    return d;
+  }catch(e){ toast('✗ '+e.message,'err'); }
+  finally{ if(btn) btn.disabled = false; }
+}
+async function cipCreate(){
+  try{ await cipSave(); }catch(e){ return; }
+  const d = await bulkCreateIp({
+    protocol: document.getElementById('cip-proto').value,
+    count: parseInt(document.getElementById('cip-n').value)||30,
+    group_name: document.getElementById('cip-group').value.trim() || 'کانفیگ‌های IP',
+    label_prefix: 'IP', fingerprint: 'chrome',
+  }, document.getElementById('cip-create-btn'));
+  if(d) closeModal('modal-clean-ips');
+}
+async function bulkCreateIpFromModal(){
+  const protocol = document.getElementById('nl-proto').value || 'vless-ws';
+  if(protocol === 'mtproto'){ toast('✗ برای Telegram Proxy ساخت با IP معنی ندارد','err'); return; }
+  const targetEl = document.getElementById('nl-target');
+  if(targetEl && targetEl.value){ toast('✗ ساخت با IP فقط روی همین پنل ممکن است','err'); return; }
+  const sub_id = document.getElementById('nl-sub').value || null;
+  const d = await bulkCreateIp({
+    protocol,
+    count: parseInt(document.getElementById('nl-bulkip-n').value)||30,
+    sub_id,
+    group_name: sub_id ? '' : 'کانفیگ‌های IP',
+    label_prefix: document.getElementById('nl-label').value.trim() || 'IP',
+    fingerprint: document.getElementById('nl-fp').value || 'chrome',
+    limit_value: document.getElementById('nl-val').value || 0,
+    limit_unit: document.getElementById('nl-unit').value,
+    expires_days: document.getElementById('nl-exp').value || 0,
+    note: document.getElementById('nl-note').value.trim(),
+  }, document.getElementById('nl-bulkip-btn'));
+  if(d && d.created) closeModal('modal-create-link');
+}
+authF('/api/clean-ips').then(r=>r.ok?r.json():null).then(d=>{ if(d) cipRenderIps(d.ips); }).catch(()=>{});
 
 function openEditLink(uuid,nodeId){
   const l=allLinksList.find(x=>x.uuid===uuid&&(nodeId?x._nodeId===nodeId:!x._nodeId));
